@@ -14,8 +14,8 @@ SAMPLES = 2 ** 22
 BATCH_SIZE = 32
 
 def _marching_cubes(volume, level=0):
-    verts, faces, _, _ = measure.marching_cubes(volume, level)
-    return verts[faces].reshape((-1, 3))
+    verts, faces, _, _ = measure.marching_cubes(volume, level, allow_degenerate=False)
+    return verts, faces
 
 def _cartesian_product(*arrays):
     la = len(arrays)
@@ -50,13 +50,13 @@ def _worker(sdf, job, sparse):
     P = _cartesian_product(X, Y, Z)
     volume = sdf(P).reshape((len(X), len(Y), len(Z)))
     try:
-        points = _marching_cubes(volume)
-    except Exception:
+        points, faces = _marching_cubes(volume)
+    except Exception as e:
         return []
         # return _debug_triangles(X, Y, Z)
     scale = np.array([X[1] - X[0], Y[1] - Y[0], Z[1] - Z[0]])
     offset = np.array([X[0], Y[0], Z[0]])
-    return points * scale + offset
+    return (points * scale + offset, faces)
 
 def _estimate_bounds(sdf):
     # TODO: raise exception if bound estimation fails
@@ -124,7 +124,8 @@ def generate(
         print('%d samples in %d batches with %d workers' %
             (num_samples, num_batches, workers))
 
-    points = []
+    verts = []
+    faces = []
     skipped = empty = nonempty = 0
     bar = progress.Bar(num_batches, enabled=verbose)
     pool = ThreadPool(workers)
@@ -137,16 +138,19 @@ def generate(
             empty += 1
         else:
             nonempty += 1
-            points.extend(result)
+            verts_b, faces_b = result
+            # face indices are for batch, so need to increment
+            faces.extend([f + len(verts) for f in faces_b])
+            verts.extend(verts_b)
+            
     bar.done()
 
     if verbose:
         print('%d skipped, %d empty, %d nonempty' % (skipped, empty, nonempty))
-        triangles = len(points) // 3
+        numTrig = len(faces)
         seconds = time.time() - start
-        print('%d triangles in %g seconds' % (triangles, seconds))
-
-    return points
+        print('%d triangles in %g seconds' % (numTrig, seconds))
+    return np.asarray(verts), np.asarray(faces)
 
 def save(path, *args, **kwargs):
     points = generate(*args, **kwargs)
